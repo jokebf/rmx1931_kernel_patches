@@ -1,0 +1,53 @@
+From: Hermes Agent <hermes@nousresearch.com>
+Date: Tue, 7 Jul 2026 23:00:00 +0530
+Subject: [PATCH 1/4] oplus_charger: Fix fastchg_to_normal deadlock causing charge to
+ never resume
+
+When fastchg_to_normal() or fastchg_to_warm() returns true, the charger
+state machine blocks charging. After the temperature/soc condition clears
+and these flags return false, the charger should resume — but the static
+'charger_resumed' variable stays 'true' and the else-if condition
+`charger_resumed == false` never evaluates true again, permanently
+locking out charging.
+
+Fix by:
+1. Removing the `charger_resumed == false` condition from the resume
+   path — charger_resumed should only gate the first attempt after boot.
+2. Setting `charger_resumed = false` inside the fastchg_to_normal/warm
+   block so the driver attempts to resume once the condition clears.
+
+Thermal protection is NOT removed — charging still stops when hot.
+It just properly resumes when the device cools down.
+
+Signed-off-by: Hermes Agent <hermes@nousresearch.com>
+---
+ drivers/power/oppo/oplus_charger.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/power/oppo/oplus_charger.c b/drivers/power/oppo/oplus_charger.c
+index 9c80b1e2a..f37d9b1c0 100644
+--- a/drivers/power/oppo/oplus_charger.c
++++ b/drivers/power/oppo/oplus_charger.c
+@@ -5285,15 +5285,16 @@ void oplus_charger_detect_check(struct oplus_chg_chip *chip)
+ 		} else {
+ 			if (oplus_vooc_get_fastchg_to_normal() == true
+ 					|| oplus_vooc_get_fastchg_to_warm() == true) {
+-				/*do nothing*/
++				/* transition in progress — reset so we retry once it clears */
++				charger_resumed = false;
+ 				charger_xlog_printk(CHG_LOG_CRTI,
+ 					"fast_to_normal or to_warm 2,don't turn on charge here\n");
+ 				if (oplus_vooc_get_reset_adapter_st()) {
+ 					oplus_chg_unsuspend_charger();
+ 				}
+-			} else if (oplus_vooc_get_fastchg_started() == false
+-					&& charger_resumed == false) {
+-				charger_resumed = chip->chg_ops->check_charger_resume();
++			} else if (oplus_vooc_get_fastchg_started() == false) {
++				if (!charger_resumed)
++					charger_resumed = chip->chg_ops->check_charger_resume();
+ 				oplus_chg_turn_on_charging(chip);
+ 
+ 			}
+-- 
+2.34.1

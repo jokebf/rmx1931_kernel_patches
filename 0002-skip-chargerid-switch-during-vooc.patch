@@ -1,0 +1,50 @@
+From: Hermes Agent <hermes@nousresearch.com>
+Date: Tue, 7 Jul 2026 23:00:00 +0530
+Subject: [PATCH 2/4] oplus_charger: Skip chargerid switch during VOOC active to
+ prevent MCU communication errors
+
+The usbtemp_kthread periodically calls smbchg_set_chargerid_switch_val(0)
+to measure USB temperature. When VOOC fast charging is active, this
+disconnects the charger ID switch and disrupts communication with the
+VOOC MCU over the data GPIO (gpio 93), causing 'data err:0x70' and
+subsequent charger suspend.
+
+Fix by skipping chargerid switch manipulation when fast charging
+(VOOC/SVOOC) is active.
+
+Signed-off-by: Hermes Agent <hermes@nousresearch.com>
+---
+ drivers/power/oppo/oplus_charger.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/power/oppo/oplus_charger.c b/drivers/power/oppo/oplus_charger.c
+index f37d9b1c0..a8e3c2f4b 100644
+--- a/drivers/power/oppo/oplus_charger.c
++++ b/drivers/power/oppo/oplus_charger.c
+@@ -6213,14 +6213,23 @@ static void oplus_chg_get_chargerid_voltage(struct oplus_chg_chip *chip)
+ 		charger_xlog_printk(CHG_LOG_CRTI,
+ 			"get charger id from mcu, chip->chargerid_volt = %d\n",
+ 			chip->chargerid_volt);
+-	} else {
++	}
++
++	/* Don't touch chargerid switch if VOOC fast charging is active -
++	 * doing so disconnects the data GPIO and kills MCU communication,
++	 * causing "data err:0x70" and unwanted charger suspend.
++	 */
++	if (oplus_vooc_get_fastchg_started() == true) {
++		charger_xlog_printk(CHG_LOG_CRTI,
++			"fastchg active, skip chargerid switch\n");
++	} else if (chip->charger_exist) {
+ 		if (chip->chg_ops->get_chargerid_switch_val() == 0) {
+ 			chip->chg_ops->set_chargerid_switch_val(1);
+ 			oplus_vooc_set_vooc_chargerid_switch_val(1);
+ 			msleep(100);
+ 			chip->chargerid_volt = oplus_chg_chargerid_voltage_check(chip);
+ 		}
+-	}
+ 
+ 	charger_xlog_printk(CHG_LOG_CRTI,
+ 		"get charger id, chip->chargerid_volt = %d, charger_exist = %d\n",
+-- 
+2.34.1

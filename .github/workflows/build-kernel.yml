@@ -1,0 +1,116 @@
+name: Build RMX1931 (samurai) Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Kernel branch to build'
+        required: true
+        default: 'lineage-20'
+        type: choice
+        options:
+          - lineage-20
+          - lineage-21
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check free space
+        run: df -h
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            bc bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git gnupg gperf imagemagick lib32readline-dev \
+            lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils lzop pngcrush \
+            rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            libelf-dev device-tree-compiler python3 python3-pip
+
+      - name: Clone kernel source
+        run: |
+          git clone --depth=1 -b ${{ inputs.branch }} \
+            https://github.com/HyperTeam/android_kernel_realme_sm8150.git kernel
+          cd kernel
+
+      - name: Download prebuilt Clang toolchain
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          # Use Android's prebuilt Clang (r487747 from NDK r25c)
+          curl -L -o clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747.tar.gz"
+          mkdir clang && tar xzf clang.tar.gz -C clang/
+          # Use GCC 4.9 for aarch64 (required for kernel 4.14)
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            gcc
+
+      - name: Apply patches
+        run: |
+          cd kernel
+          
+          # Patch 1: Fix charger deadlock (critical)
+          curl -sL "https://raw.githubusercontent.com/artspark-max/rmx1931_kernel_patches/main/0001-charger-fix-deadlock.patch" | patch -p1 || true
+          
+          # Patch 2: Skip chargerid switch during VOOC
+          curl -sL "https://raw.githubusercontent.com/artspark-max/rmx1931_kernel_patches/main/0002-skip-chargerid-switch-during-vooc.patch" | patch -p1 || true
+
+      - name: Set up build environment
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CLANG_PATH=${{ github.workspace }}/toolchain/clang
+          export GCC_PATH=${{ github.workspace }}/toolchain/gcc
+          export PATH=$CLANG_PATH/bin:$GCC_PATH/bin:/usr/bin:$PATH
+          
+          # Set cross-compile environment
+          export CROSS_COMPILE=$GCC_PATH/bin/aarch64-linux-android-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
+          echo "CLANG_TRIPLE=$CLANG_TRIPLE" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "SUBARCH=arm64" >> $GITHUB_ENV
+
+      - name: Configure kernel
+        run: |
+          cd kernel
+          make O=out ARCH=arm64 \
+            CC=clang \
+            vendor/sm8150-perf_defconfig
+          
+          # Verify OPLUS_CHARGER is enabled
+          grep -q "OPLUS_CHARGER" out/.config && echo "OPLUS_CHARGER: CONFIGURED ✓" || echo "WARNING: OPLUS_CHARGER not in defconfig!"
+
+      - name: Build kernel
+        run: |
+          cd kernel
+          make O=out ARCH=arm64 \
+            CC=clang \
+            -j$(nproc) 2>&1 | tail -50
+
+      - name: Check build output
+        run: |
+          echo "=== Build artifacts ==="
+          find kernel/out/arch/arm64/boot -type f -name "*.dtb" -o -name "Image*" -o -name "*.gz" | sort
+          echo ""
+          echo "=== Image size ==="
+          ls -lh kernel/out/arch/arm64/boot/Image.gz-dtb 2>/dev/null || \
+          ls -lh kernel/out/arch/arm64/boot/Image 2>/dev/null || \
+          ls -lh kernel/out/arch/arm64/boot/Image.gz 2>/dev/null
+
+      - name: Upload kernel image
+        uses: actions/upload-artifact@v4
+        with:
+          name: rmx1931-kernel-${{ inputs.branch }}
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/arch/arm64/boot/*.dtb
+          if-no-files-found: error
