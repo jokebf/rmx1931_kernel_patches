@@ -37,15 +37,12 @@ jobs:
           cd kernel
 
       - name: Apply patches
-        shell: bash {0}
         run: |
           cd kernel
-          
-          # Patch 1: Fix charger deadlock (critical)
-          curl -sL "https://raw.githubusercontent.com/jokebf/rmx1931_kernel_patches/main/0001-charger-fix-deadlock.patch" | patch -p1 || true
-          
-          # Patch 2: Skip chargerid switch during VOOC
-          curl -sL "https://raw.githubusercontent.com/jokebf/rmx1931_kernel_patches/main/0002-skip-chargerid-switch-during-vooc.patch" | patch -p1 || true
+          # Apply patch 1: charger deadlock fix via Python script
+          curl -sL "https://raw.githubusercontent.com/jokebf/rmx1931_kernel_patches/main/apply_patch1.py" \
+            -o /tmp/apply_patch1.py
+          python3 /tmp/apply_patch1.py drivers/power/oppo/oplus_charger.c
 
       - name: Configure kernel
         run: |
