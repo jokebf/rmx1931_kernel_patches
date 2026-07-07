@@ -36,18 +36,15 @@ jobs:
             https://github.com/HyperTeam/android_kernel_realme_sm8150.git kernel
           cd kernel
 
-      - name: Download prebuilt Clang toolchain
+      - name: Download prebuilt toolchain
         run: |
           mkdir -p toolchain
           cd toolchain
-          # Use Android's prebuilt Clang (r487747 from NDK r25c)
-          curl -L -o clang.tar.gz \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747.tar.gz"
-          mkdir clang && tar xzf clang.tar.gz -C clang/
-          # Use GCC 4.9 for aarch64 (required for kernel 4.14)
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-            gcc
+          # Use GCC 4.9 Linaro for aarch64 (kernel 4.14 compatible)
+          wget -q https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
+          tar xf gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
+          mv gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu gcc
+          echo "Arm GCC downloaded"
 
       - name: Apply patches
         run: |
@@ -64,17 +61,13 @@ jobs:
           cd kernel
           export ARCH=arm64
           export SUBARCH=arm64
-          export CLANG_PATH=${{ github.workspace }}/toolchain/clang
-          export GCC_PATH=${{ github.workspace }}/toolchain/gcc
-          export PATH=$CLANG_PATH/bin:$GCC_PATH/bin:/usr/bin:$PATH
+          export PATH=${{ github.workspace }}/toolchain/gcc/bin:/usr/bin:$PATH
           
-          # Set cross-compile environment
-          export CROSS_COMPILE=$GCC_PATH/bin/aarch64-linux-android-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
+          # Set cross-compile environment (LINARO GCC)
+          export CROSS_COMPILE=aarch64-linux-gnu-
           
           echo "PATH=$PATH" >> $GITHUB_ENV
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
-          echo "CLANG_TRIPLE=$CLANG_TRIPLE" >> $GITHUB_ENV
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
 
@@ -82,7 +75,6 @@ jobs:
         run: |
           cd kernel
           make O=out ARCH=arm64 \
-            CC=clang \
             vendor/sm8150-perf_defconfig
           
           # Verify OPLUS_CHARGER is enabled
@@ -92,7 +84,6 @@ jobs:
         run: |
           cd kernel
           make O=out ARCH=arm64 \
-            CC=clang \
             -j$(nproc) 2>&1 | tail -50
 
       - name: Check build output
