@@ -85,7 +85,7 @@ jobs:
         run: |
           cd kernel
           make O=out ARCH=arm64 \
-            vendor/sm8150-perf_defconfig || { echo "DEFCONFIG FAILED"; exit 1; }
+            samurai_defconfig || { echo "DEFCONFIG FAILED"; exit 1; }
           
           # Verify OPLUS_CHARGER is enabled
           grep -q "OPLUS_CHARGER" out/.config && echo "OPLUS_CHARGER: CONFIGURED ✓" || echo "WARNING: OPLUS_CHARGER not in defconfig!"

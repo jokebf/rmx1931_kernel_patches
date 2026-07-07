@@ -65,8 +65,8 @@ git am /path/to/0001*.patch /path/to/0002*.patch
 
 # Build
 export ARCH=arm64
-export CROSS_COMPILE=aarch64-linux-android-
-make vendor/sm8150-perf_defconfig
+export CROSS_COMPILE=aarch64-linux-gnu-
+make samurai_defconfig
 make -j$(nproc)
 # Output: out/arch/arm64/boot/Image.gz-dtb
 ```
