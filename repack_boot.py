@@ -9,14 +9,13 @@ import os
 import hashlib
 
 def unpack_bootimg(boot_img_path, out_dir):
-    """Extract ramdisk and kernel from boot.img using unpackbootimg style"""
+    """Extract ramdisk and kernel from boot.img"""
     os.makedirs(out_dir, exist_ok=True)
     
     with open(boot_img_path, 'rb') as f:
         data = f.read()
     
-    # Android boot image header (v2/v3)
-    # magic: 'ANDROID!' (8 bytes)
+    # Android boot image magic
     magic = data[:8]
     if magic != b'ANDROID!':
         print(f"ERROR: Not a boot image (magic: {magic})")
@@ -24,12 +23,7 @@ def unpack_bootimg(boot_img_path, out_dir):
     
     # Parse header
     kernel_size = struct.unpack_from('<I', data, 8)[0]
-    kernel_addr = struct.unpack_from('<I', data, 12)[0]
     ramdisk_size = struct.unpack_from('<I', data, 16)[0]
-    ramdisk_addr = struct.unpack_from('<I', data, 20)[0]
-    second_size = struct.unpack_from('<I', data, 24)[0]
-    second_addr = struct.unpack_from('<I', data, 28)[0]
-    tags_addr = struct.unpack_from('<I', data, 32)[0]
     page_size = struct.unpack_from('<I', data, 36)[0]
     header_version = struct.unpack_from('<I', data, 40)[0]
     
@@ -39,20 +33,15 @@ def unpack_bootimg(boot_img_path, out_dir):
     print(f"  Ramdisk size: {ramdisk_size}")
     print(f"  Header version: {header_version}")
     
-    # Calculate kernel offset (after header, page-aligned)
+    # Header occupies (1 + header_version) pages
     header_size = (1 + header_version) * page_size
-    if header_version >= 3:
-        # For v3+, kernel starts at offset 4096
-        kernel_offset = page_size
-        kernel_data = data[kernel_offset:kernel_offset + kernel_size]
-        ramdisk_offset = kernel_offset + ((kernel_size + page_size - 1) // page_size) * page_size
-        ramdisk_data = data[ramdisk_offset:ramdisk_offset + ramdisk_size]
-    else:
-        # v0/v1/v2
-        kernel_offset = page_size  # After header
-        kernel_data = data[kernel_offset:kernel_offset + kernel_size]
-        ramdisk_offset = kernel_offset + ((kernel_size + page_size - 1) // page_size) * page_size
-        ramdisk_data = data[ramdisk_offset:ramdisk_offset + ramdisk_size]
+    kernel_offset = header_size
+    kernel_data = data[kernel_offset:kernel_offset + kernel_size]
+    
+    # Ramdisk starts at the next page after kernel
+    kernel_pages = (kernel_size + page_size - 1) // page_size
+    ramdisk_offset = kernel_offset + kernel_pages * page_size
+    ramdisk_data = data[ramdisk_offset:ramdisk_offset + ramdisk_size]
     
     # Save extracted data
     with open(f"{out_dir}/kernel.orig", 'wb') as f:
@@ -60,11 +49,14 @@ def unpack_bootimg(boot_img_path, out_dir):
     with open(f"{out_dir}/ramdisk.gz", 'wb') as f:
         f.write(ramdisk_data)
     with open(f"{out_dir}/header.bin", 'wb') as f:
-        f.write(data[:page_size])
+        f.write(data[:header_size])
+    with open(f"{out_dir}/original_size.txt", 'w') as f:
+        f.write(str(os.path.getsize(boot_img_path)))
     
     print(f"  Saved: kernel.orig ({len(kernel_data)} bytes)")
     print(f"  Saved: ramdisk.gz ({len(ramdisk_data)} bytes)")
-    print(f"  Saved: header.bin ({page_size} bytes)")
+    print(f"  Saved: header.bin ({header_size} bytes)")
+    print(f"  Saved: original_size.txt ({os.path.getsize(boot_img_path)} bytes)")
     
     return True
 
@@ -79,63 +71,70 @@ def repack_bootimg(out_dir, new_kernel_path, output_path):
     with open(new_kernel_path, 'rb') as f:
         new_kernel = f.read()
     
-    # Parse header to get addresses
+    # Get original boot.img size (for padding)
+    original_size_file = f"{out_dir}/original_size.txt"
+    original_size = 0
+    if os.path.exists(original_size_file):
+        with open(original_size_file) as f:
+            original_size = int(f.read().strip())
+    
+    # Parse header
     page_size = struct.unpack_from('<I', bytes(header), 36)[0]
-    kernel_addr = struct.unpack_from('<I', bytes(header), 12)[0]
-    ramdisk_addr = struct.unpack_from('<I', bytes(header), 20)[0]
-    tags_addr = struct.unpack_from('<I', bytes(header), 32)[0]
     header_version = struct.unpack_from('<I', bytes(header), 40)[0]
     
     print(f"Repacking with new kernel ({len(new_kernel)} bytes)")
+    print(f"  Original kernel: {os.path.getsize(f'{out_dir}/kernel.orig')} bytes")
+    print(f"  New kernel: {len(new_kernel)} bytes")
     print(f"  Ramdisk: {len(ramdisk_data)} bytes")
     print(f"  Page size: {page_size}")
     print(f"  Header version: {header_version}")
+    print(f"  Original boot.img: {original_size} bytes")
     
     # Update kernel size in header
     struct.pack_into('<I', header, 8, len(new_kernel))
     
-    # Recalculate sizes
+    # Recalculate sizes (page-aligned)
     header_size = (1 + header_version) * page_size
     kernel_pages = (len(new_kernel) + page_size - 1) // page_size
     ramdisk_pages = (len(ramdisk_data) + page_size - 1) // page_size
     
-    # Recalculate total size and write
-    total_size = header_size + kernel_pages * page_size + ramdisk_pages * page_size
+    payload_size = header_size + kernel_pages * page_size + ramdisk_pages * page_size
     
     with open(output_path, 'wb') as f:
-        # Write header
+        # Write full header (padded to header_size)
         f.write(bytes(header))
-        # Pad to kernel offset
-        current = header_size
+        current = len(header)
         if current < header_size:
             f.write(b'\x00' * (header_size - current))
         
-        # Write kernel
+        # Write kernel + padding
         f.write(new_kernel)
-        # Pad to page boundary
-        kernel_used = len(new_kernel)
-        kernel_padded = kernel_pages * page_size
-        if kernel_used < kernel_padded:
-            f.write(b'\x00' * (kernel_padded - kernel_used))
+        kernel_pad = kernel_pages * page_size - len(new_kernel)
+        if kernel_pad > 0:
+            f.write(b'\x00' * kernel_pad)
         
-        # Write ramdisk
+        # Write ramdisk + padding
         f.write(ramdisk_data)
-        ramdisk_used = len(ramdisk_data)
-        ramdisk_padded = ramdisk_pages * page_size
-        if ramdisk_used < ramdisk_padded:
-            f.write(b'\x00' * (ramdisk_padded - ramdisk_used))
+        ramdisk_pad = ramdisk_pages * page_size - len(ramdisk_data)
+        if ramdisk_pad > 0:
+            f.write(b'\x00' * ramdisk_pad)
+        
+        # Pad to original boot.img size (if known)
+        if original_size > payload_size:
+            f.write(b'\x00' * (original_size - payload_size))
     
     actual_size = os.path.getsize(output_path)
     print(f"  Created: {output_path} ({actual_size} bytes)")
-    print(f"  Match stock size: {'OK' if actual_size <= os.path.getsize(f'{out_dir}/header.bin') + os.path.getsize(f'{out_dir}/kernel.orig') + os.path.getsize(f'{out_dir}/ramdisk.gz') + page_size * 2 else 'WARNING: larger'}")
+    if original_size:
+        print(f"  Matches original size: {'YES ✓' if actual_size == original_size else 'NO ✗'}")
     
     return True
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
         print("Usage:")
-        print("  Unpack: repack_boot.py unpack <boot.img> <out_dir>")
-        print("  Repack: repack_boot.py repack <out_dir> <new_kernel> <output_boot.img>")
+        print("  Unpack: repack_boot.py unpack <boot.img> [out_dir]")
+        print("  Repack: repack_boot.py repack <out_dir> <new_kernel> [output_boot.img]")
         sys.exit(1)
     
     action = sys.argv[1]
