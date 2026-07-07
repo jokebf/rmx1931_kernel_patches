@@ -14,7 +14,7 @@ on:
 
 jobs:
   build-kernel:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
       - name: Check free space
         run: df -h
@@ -23,37 +23,18 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            bc bison build-essential ccache curl flex g++-multilib \
-            gcc-multilib git gnupg gperf imagemagick lib32readline-dev \
-            lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev \
-            libssl-dev libxml2 libxml2-utils lzop pngcrush \
-            rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
-            libelf-dev device-tree-compiler python3 python3-pip \
-            python2 2>/dev/null || echo "python2 not in repo, will patch gcc-wrapper.py"
+            bc bison build-essential curl flex g++-multilib \
+            gcc-multilib git liblz4-tool libncurses5-dev \
+            libssl-dev libxml2-utils lzop \
+            rsync squashfs-tools xsltproc zip zlib1g-dev \
+            libelf-dev device-tree-compiler \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: Clone kernel source
         run: |
           git clone --depth=1 -b ${{ inputs.branch }} \
             https://github.com/HyperTeam/android_kernel_realme_sm8150.git kernel
           cd kernel
-
-      - name: Download prebuilt toolchain
-        run: |
-          mkdir -p toolchain
-          cd toolchain
-          # Use aarch64-linux-gnu GCC 10.3 from bootlin (reliable source)
-          wget -q --no-check-certificate \
-            "https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--glibc--bleeding-edge-2021.11-1.tar.bz2" \
-            -O toolchain.tar.bz2 2>&1 || \
-          wget -q \
-            "https://developer.arm.com/-/media/Files/downloads/gnu-a/10.3-2021.07/binrel/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.tar.xz" \
-            -O toolchain.tar.xz 2>&1
-          if [ -f toolchain.tar.bz2 ]; then
-            tar xf toolchain.tar.bz2 && mv aarch64--glibc--bleeding-edge-2021.11-1 gcc
-          elif [ -f toolchain.tar.xz ]; then
-            tar xf toolchain.tar.xz && mv gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu gcc
-          fi
-          echo "Arm GCC downloaded: $(ls gcc/bin/aarch64* 2>/dev/null | head -3)"
 
       - name: Apply patches
         shell: bash {0}
@@ -65,50 +46,28 @@ jobs:
           
           # Patch 2: Skip chargerid switch during VOOC
           curl -sL "https://raw.githubusercontent.com/jokebf/rmx1931_kernel_patches/main/0002-skip-chargerid-switch-during-vooc.patch" | patch -p1 || true
-          
-          # Fix gcc-wrapper.py for Python 3 (kernel 4.14 uses Python 2 syntax)
-          curl -sL "https://raw.githubusercontent.com/jokebf/rmx1931_kernel_patches/main/gcc-wrapper-py3.py" \
-            -o scripts/gcc-wrapper.py
-          chmod +x scripts/gcc-wrapper.py
-          echo "gcc-wrapper.py replaced with Python 3 version"
-
-      - name: Set up build environment
-        run: |
-          cd kernel
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export PATH=${{ github.workspace }}/toolchain/gcc/bin:/usr/bin:$PATH
-          
-          # Set cross-compile environment
-          export CROSS_COMPILE=$(ls -d ${{ github.workspace }}/toolchain/gcc/bin/*-gcc 2>/dev/null | head -1 | sed 's/-gcc$/-/')
-          
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "SUBARCH=arm64" >> $GITHUB_ENV
 
       - name: Configure kernel
-        shell: bash {0}
         run: |
           cd kernel
-          make O=out ARCH=arm64 \
+          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             samurai_defconfig || { echo "DEFCONFIG FAILED"; exit 1; }
           
           # Verify OPLUS_CHARGER is enabled
           grep -q "OPLUS_CHARGER" out/.config && echo "OPLUS_CHARGER: CONFIGURED ✓" || echo "WARNING: OPLUS_CHARGER not in defconfig!"
 
       - name: Build kernel
-        shell: bash {0}
         run: |
           cd kernel
-          make O=out ARCH=arm64 -j$(nproc) > build.log 2>&1
+          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            -j$(nproc) > build.log 2>&1
           RC=$?
           echo "Exit code: $RC"
           if [ $RC -ne 0 ]; then
             tail -50 build.log
           fi
           exit $RC
-
+ 
       - name: Check build output
         run: |
           echo "=== Last 30 lines of build ==="
