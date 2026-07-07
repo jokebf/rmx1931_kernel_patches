@@ -55,14 +55,15 @@ jobs:
           echo "Arm GCC downloaded: $(ls gcc/bin/aarch64* 2>/dev/null | head -3)"
 
       - name: Apply patches
+        shell: bash {0}
         run: |
           cd kernel
           
           # Patch 1: Fix charger deadlock (critical)
-          curl -sL "https://raw.githubusercontent.com/artspark-max/rmx1931_kernel_patches/main/0001-charger-fix-deadlock.patch" | patch -p1 || true
+          curl -sL "https://raw.githubusercontent.com/jokebf/rmx1931_kernel_patches/main/0001-charger-fix-deadlock.patch" | patch -p1 || true
           
           # Patch 2: Skip chargerid switch during VOOC
-          curl -sL "https://raw.githubusercontent.com/artspark-max/rmx1931_kernel_patches/main/0002-skip-chargerid-switch-during-vooc.patch" | patch -p1 || true
+          curl -sL "https://raw.githubusercontent.com/jokebf/rmx1931_kernel_patches/main/0002-skip-chargerid-switch-during-vooc.patch" | patch -p1 || true
 
       - name: Set up build environment
         run: |
@@ -80,29 +81,47 @@ jobs:
           echo "SUBARCH=arm64" >> $GITHUB_ENV
 
       - name: Configure kernel
+        shell: bash {0}
         run: |
           cd kernel
           make O=out ARCH=arm64 \
-            vendor/sm8150-perf_defconfig
+            vendor/sm8150-perf_defconfig || { echo "DEFCONFIG FAILED"; exit 1; }
           
           # Verify OPLUS_CHARGER is enabled
           grep -q "OPLUS_CHARGER" out/.config && echo "OPLUS_CHARGER: CONFIGURED ✓" || echo "WARNING: OPLUS_CHARGER not in defconfig!"
 
       - name: Build kernel
+        shell: bash {0}
         run: |
           cd kernel
-          make O=out ARCH=arm64 \
-            -j$(nproc) 2>&1 | tail -50
+          make O=out ARCH=arm64 -j$(nproc) > build.log 2>&1
+          RC=$?
+          echo "Exit code: $RC"
+          if [ $RC -ne 0 ]; then
+            tail -50 build.log
+          fi
+          exit $RC
 
       - name: Check build output
         run: |
+          echo "=== Last 30 lines of build ==="
+          tail -30 kernel/build.log
+          echo ""
           echo "=== Build artifacts ==="
-          find kernel/out/arch/arm64/boot -type f -name "*.dtb" -o -name "Image*" -o -name "*.gz" | sort
+          find kernel/out/arch/arm64/boot -type f -name "*.dtb" -o -name "Image*" -o -name "*.gz" | sort 2>/dev/null || echo "No boot artifacts found"
           echo ""
           echo "=== Image size ==="
           ls -lh kernel/out/arch/arm64/boot/Image.gz-dtb 2>/dev/null || \
           ls -lh kernel/out/arch/arm64/boot/Image 2>/dev/null || \
-          ls -lh kernel/out/arch/arm64/boot/Image.gz 2>/dev/null
+          ls -lh kernel/out/arch/arm64/boot/Image.gz 2>/dev/null || \
+          echo "No kernel image found"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: kernel/build.log
 
       - name: Upload kernel image
         uses: actions/upload-artifact@v4
