@@ -40,11 +40,19 @@ jobs:
         run: |
           mkdir -p toolchain
           cd toolchain
-          # Use GCC 4.9 Linaro for aarch64 (kernel 4.14 compatible)
-          wget -q https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
-          tar xf gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
-          mv gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu gcc
-          echo "Arm GCC downloaded"
+          # Use aarch64-linux-gnu GCC 10.3 from bootlin (reliable source)
+          wget -q --no-check-certificate \
+            "https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--glibc--bleeding-edge-2021.11-1.tar.bz2" \
+            -O toolchain.tar.bz2 2>&1 || \
+          wget -q \
+            "https://developer.arm.com/-/media/Files/downloads/gnu-a/10.3-2021.07/binrel/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.tar.xz" \
+            -O toolchain.tar.xz 2>&1
+          if [ -f toolchain.tar.bz2 ]; then
+            tar xf toolchain.tar.bz2 && mv aarch64--glibc--bleeding-edge-2021.11-1 gcc
+          elif [ -f toolchain.tar.xz ]; then
+            tar xf toolchain.tar.xz && mv gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu gcc
+          fi
+          echo "Arm GCC downloaded: $(ls gcc/bin/aarch64* 2>/dev/null | head -3)"
 
       - name: Apply patches
         run: |
@@ -63,8 +71,8 @@ jobs:
           export SUBARCH=arm64
           export PATH=${{ github.workspace }}/toolchain/gcc/bin:/usr/bin:$PATH
           
-          # Set cross-compile environment (LINARO GCC)
-          export CROSS_COMPILE=aarch64-linux-gnu-
+          # Set cross-compile environment
+          export CROSS_COMPILE=$(ls -d ${{ github.workspace }}/toolchain/gcc/bin/*-gcc 2>/dev/null | head -1 | sed 's/-gcc$/-/')
           
           echo "PATH=$PATH" >> $GITHUB_ENV
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
